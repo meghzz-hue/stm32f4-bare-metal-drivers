@@ -34,15 +34,6 @@ This repository contains educational bare-metal drivers built from the ground up
 - `tim_driver.h/c` - Timer driver implementation
 - `main.c` - Application code
 
-### 🔲 02 - UART Driver (Coming Soon)
-Debug output via USART2 with printf support
-
-### 🔲 03 - PWM Driver (Coming Soon)
-LED brightness control with timer PWM
-
-### 🔲 04 - GPIO Interrupt (Coming Soon)
-Button press detection with debouncing
-
 ## 🛠️ Build Instructions
 
 ### Prerequisites
@@ -84,12 +75,6 @@ Right-click → Run As → STM32 C/C++ Application
 
 **Recommended order**:
 1. ✅ **Timer Driver** - Interrupts & timing
-2. 🔲 **UART Driver** - Serial communication
-3. 🔲 **GPIO Interrupt** - External interrupts
-4. 🔲 **PWM Driver** - Pulse width modulation
-5. 🔲 **ADC Driver** - Analog input
-6. 🔲 **SPI Driver** - Serial peripheral interface
-7. 🔲 **I2C Driver** - Inter-integrated circuit
 
 ## 📂 Project Structure
 
@@ -139,10 +124,6 @@ MIT License - Feel free to use for learning and teaching
 - [STM32F401RE Datasheet](https://www.st.com/resource/en/datasheet/stm32f401re.pdf)
 - [ARM Cortex-M4 Technical Reference](https://developer.arm.com/documentation/100166/0001)
 - [CMSIS Documentation](https://arm-software.github.io/CMSIS_5/Core/html/index.html)
-
-## 👨‍💻 Author
-
-Created as a learning resource for bare-metal embedded systems programming.
 
 ## 🌟 Acknowledgments
 
