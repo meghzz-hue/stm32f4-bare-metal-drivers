@@ -2,7 +2,6 @@
  ******************************************************************************
  * @file    tim_driver.h
  * @brief   Bare-metal TIM2 driver header for STM32F401RE
- * @author  Your Name
  * @date    2026-01-10
  ******************************************************************************
  */
@@ -59,3 +58,4 @@ void TIM2_IRQHandler(void);
 void TIM2_Callback(void);
 
 #endif /* TIM_DRIVER_H */
+
