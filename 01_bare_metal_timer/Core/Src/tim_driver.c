@@ -2,7 +2,6 @@
  ******************************************************************************
  * @file    tim_driver.c
  * @brief   Bare-metal TIM2 driver implementation for STM32F401RE
- * @author  Your Name
  * @date    2026-01-10
  ******************************************************************************
  */
@@ -98,3 +97,4 @@ __attribute__((weak)) void TIM2_Callback(void)
     /* Default implementation: do nothing */
     /* User will override this function in main.c */
 }
+
