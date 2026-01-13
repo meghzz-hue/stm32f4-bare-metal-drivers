@@ -1,0 +1,56 @@
+# Build directories
+Debug/
+Release/
+build/
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.su
+*.d
+*.lst
+
+# IDE specific files
+.metadata/
+.settings/
+RemoteSystemsTempFiles/
+*.launch
+*.swp
+*.swo
+*~
+
+# Compilation results
+*.axf
+*.out
+*.app
+
+# OS specific
+.DS_Store
+Thumbs.db
+*.tmp
+
+# Keep these IDE files but ignore others
+!.cproject
+!.project
+
+# Ignore user-specific settings
+*.cproject.bak
+*.project.bak
+
+# Python (if using scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Archives
+*.zip
+*.tar.gz
+*.rar
+
+# Logs
+*.log
+
+# Keep empty directories
+!.gitkeep
