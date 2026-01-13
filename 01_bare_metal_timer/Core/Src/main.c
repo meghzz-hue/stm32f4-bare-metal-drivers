@@ -2,7 +2,6 @@
  ******************************************************************************
  * @file    main.c
  * @brief   Bare-metal timer application - LED blinks every 3 seconds
- * @author  Your Name
  * @date    2026-01-12
  ******************************************************************************
  */
@@ -193,3 +192,4 @@ void Error_Handler(void)
         /* Stay here if error occurs */
     }
 }
+
