@@ -1,7 +1,7 @@
 ######################################
 # Target
 ######################################
-TARGET = bare_metal_timer_project
+TARGET = 01_bare_metal_timer
 
 ######################################
 # Building variables
@@ -244,5 +244,6 @@ help:
 
 # Phony targets
 .PHONY: all clean flash flash-openocd debug disasm info help
+
 
 # *** EOF ***
