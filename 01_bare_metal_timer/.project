@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <projectDescription>
-	<name>bare_metal_timer_project</name>
+	<name>01_bare_metal_timer</name>
 	<comment></comment>
 	<projects>
 	</projects>
@@ -31,3 +31,4 @@
 		<nature>com.st.stm32cube.ide.mcu.MCUManagedMakefileProjectNature</nature>
 	</natures>
 </projectDescription>
+
