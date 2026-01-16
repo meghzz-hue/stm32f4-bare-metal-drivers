@@ -23,54 +23,54 @@
 void GPIO_Init(void);
 void SystemClock_Config(void);
 uint32_t Get_APB1_Timer_Clock(void);
+void TIM2_PeriodElapsedCallback(void);
 
 /* Global variable for debugging */
 volatile uint32_t toggle_count = 0;
 
 /**
  * @brief Main application entry point
+ * @note Demonstrates TIM2 driver usage for periodic LED blinking
  */
 int main(void)
 {
-    /* 1. Configure system clock */
+    /* Initialize system infrastructure */
     SystemClock_Config();
-
-    /* 2. Initialize GPIO for LED (PA5) */
     GPIO_Init();
 
-    /* 3. Get actual APB1 timer clock frequency */
+    /* Determine timer clock frequency for proper timing calculations */
     uint32_t apb1_timer_clk = Get_APB1_Timer_Clock();
 
-    /* 4. Configure timer for 3-second interrupt
-     * For 16 MHz APB1 timer clock:
-     * Prescaler = 1599 -> 16 MHz / 1600 = 10,000 Hz
-     * Period = 29999 -> 10,000 Hz / 30,000 = 0.333 Hz = 3 seconds
-     */
-    TIM_Config_t timer_config;
+    /* Configure TIM2 for 3-second periodic interrupts */
+    TIM_Config_t timer_config = {0};
 
-    if (apb1_timer_clk == 84000000) {
-        // If APB1 timer clock is 84 MHz (PLL configured)
-        timer_config.prescaler = 8399;   // 84 MHz / 8400 = 10,000 Hz
-        timer_config.period = 29999;     // 10 kHz / 30,000 = 3 seconds
+    if (apb1_timer_clk == 84000000U) {
+        /* 84 MHz APB1 clock: Configure for 10 kHz timer frequency */
+        timer_config.prescaler = 8399U;   /* 84 MHz / 8400 = 10 kHz */
+        timer_config.period = 29999U;     /* 10 kHz / 30000 = 0.333 Hz (3 sec) */
     } else {
-        // If APB1 timer clock is 16 MHz (HSI default)
-        timer_config.prescaler = 1599;   // 16 MHz / 1600 = 10,000 Hz
-        timer_config.period = 29999;     // 10 kHz / 30,000 = 3 seconds
+        /* 16 MHz APB1 clock: Configure for 10 kHz timer frequency */
+        timer_config.prescaler = 1599U;   /* 16 MHz / 1600 = 10 kHz */
+        timer_config.period = 29999U;     /* 10 kHz / 30000 = 0.333 Hz (3 sec) */
     }
 
+    /* Initialize TIM2 driver with configuration */
     TIM2_Init(&timer_config);
 
-    /* 5. Start the timer */
+    /* Register callback for timer period elapsed events */
+    TIM2_RegisterCallback(TIM2_PeriodElapsedCallback);
+
+    /* Start the timer */
     TIM2_Start();
 
-    /* 6. Main loop - CPU is free to do other tasks */
+    /* Main application loop - timer interrupts handle LED toggling */
     while (1)
     {
-        /* Infinite loop - interrupts handle LED toggling */
-        /* You can add other tasks here */
+        /* Application can perform other tasks here */
+        /* LED toggling is handled by TIM2_PeriodElapsedCallback() */
 
-        // Optional: Low-power mode
-        // __WFI();  // Wait for interrupt
+        /* Optional: Enter low-power mode between interrupts */
+        /* __WFI(); */
     }
 }
 
@@ -166,10 +166,11 @@ void SystemClock_Config(void)
 }
 
 /**
- * @brief Timer callback - called every 3 seconds
- * This function overrides the weak function in tim_driver.c
+ * @brief TIM2 period elapsed callback function
+ * @note Called from TIM2_IRQHandler when timer period expires
+ * @note Toggles LED and increments debug counter
  */
-void TIM2_Callback(void)
+void TIM2_PeriodElapsedCallback(void)
 {
     /* Toggle LED state */
     LED_TOGGLE;
