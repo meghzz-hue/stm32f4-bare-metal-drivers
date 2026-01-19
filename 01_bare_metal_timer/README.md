@@ -10,14 +10,14 @@ Learn how to:
 - Toggle GPIO without HAL libraries
 - Set up bare-metal build system
 
-## 🔧 Features
+##  Features
 
 - **Timer**: TIM2 generates interrupt every 3 seconds
 - **GPIO**: PA5 (onboard green LED) toggles on interrupt
 - **Clock**: System clock configured to 84 MHz using PLL
 - **Interrupts**: NVIC configured for TIM2 global interrupt
 
-## 📐 Hardware Connections
+##  Hardware Connections
 
 | Component | Pin | Description |
 |-----------|-----|-------------|
@@ -84,7 +84,7 @@ Use a stopwatch to verify:
 - Count blinks in 60 seconds → Should be **20 toggles** (10 ON→OFF cycles)
 - Each state should last exactly 3.00 seconds
 
-## 🐛 Troubleshooting
+##  Troubleshooting
 
 ### LED not blinking?
 1. Check clock configuration in `SystemClock_Config()`
@@ -152,4 +152,5 @@ See **Project 02: Software Timers** to learn:
 - Software timer management
 - Task scheduling without RTOS
 - Callback-based events
+
 
