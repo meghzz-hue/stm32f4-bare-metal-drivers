@@ -140,7 +140,8 @@ Use a stopwatch to verify:
 - Default interrupt handlers
 
 ## 📚 Learning Resources
-
+- https://www.st.com/resource/en/reference_manual/rm0368-stm32f401xbc-and-stm32f401xde-advanced-armbased-32bit-mcus-stmicroelectronics.pdf
+- https://www.st.com/resource/en/datasheet/stm32f401re.pdf
 - [STM32F401 Reference Manual](https://www.st.com/resource/en/reference_manual/rm0368-stm32f401xbc-and-stm32f401xde-advanced-armbased-32bit-mcus-stmicroelectronics.pdf)
 - [Cortex-M4 Programming Manual](https://www.st.com/resource/en/programming_manual/pm0214-stm32-cortexm4-mcus-and-mpus-programming-manual-stmicroelectronics.pdf)
 
@@ -151,3 +152,4 @@ See **Project 02: Software Timers** to learn:
 - Software timer management
 - Task scheduling without RTOS
 - Callback-based events
+
