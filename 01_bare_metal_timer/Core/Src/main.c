@@ -2,7 +2,8 @@
  ******************************************************************************
  * @file    main.c
  * @brief   Bare-metal timer application - LED blinks every 3 seconds
- * @date    2026-01-12
+ *          Uses device driver pattern with callback registration
+ * @date    2026-01-24
  ******************************************************************************
  */
 
@@ -10,74 +11,145 @@
 #include "system_stm32f4xx.h"
 #include "tim_driver.h"
 
-/* GPIO Configuration */
+/* ============================================================================
+ * GPIO CONFIGURATION FOR LED
+ * ============================================================================*/
+
 #define LED_PORT        GPIOA
 #define LED_PIN         5
 
 /* GPIO Helper Macros */
-#define LED_ON          (LED_PORT->ODR |= (1U << LED_PIN))
-#define LED_OFF         (LED_PORT->ODR &= ~(1U << LED_PIN))
-#define LED_TOGGLE      (LED_PORT->ODR ^= (1U << LED_PIN))
+#define LED_ON()        (LED_PORT->ODR |= (1U << LED_PIN))
+#define LED_OFF()       (LED_PORT->ODR &= ~(1U << LED_PIN))
+#define LED_TOGGLE()    (LED_PORT->ODR ^= (1U << LED_PIN))
 
-/* Function Prototypes */
-void GPIO_Init(void);
-void SystemClock_Config(void);
-uint32_t Get_APB1_Timer_Clock(void);
-void TIM2_PeriodElapsedCallback(void);
+/* ============================================================================
+ * GLOBAL VARIABLES & STATISTICS
+ * ============================================================================*/
 
-/* Global variable for debugging */
-volatile uint32_t toggle_count = 0;
+/**
+ * @brief Timer device handle - encapsulates timer state
+ */
+static TIM_Handle_t g_timer2_handle;
+
+/**
+ * @brief Debug counter - incremented by callback
+ */
+volatile uint32_t g_led_toggle_count = 0;
+
+/* ============================================================================
+ * FUNCTION PROTOTYPES
+ * ============================================================================*/
+
+static void GPIO_LED_Init(void);
+static void SystemClock_Config(void);
+static uint32_t Get_APB1_Timer_Clock(void);
+static void TimerPeriodElapsedCallback(void);
+void Error_Handler(void);
+
+/* ============================================================================
+ * MAIN APPLICATION ENTRY POINT
+ * ============================================================================*/
 
 /**
  * @brief Main application entry point
- * @note Demonstrates TIM2 driver usage for periodic LED blinking
+ * Initializes hardware and starts timer with callback
  */
 int main(void)
 {
-    /* Initialize system infrastructure */
-    SystemClock_Config();
-    GPIO_Init();
+    TIM_Status_t init_status;
+    TIM_Config_t timer_config;
 
-    /* Determine timer clock frequency for proper timing calculations */
+    /* Step 1: Configure system clock to 84 MHz */
+    SystemClock_Config();
+
+    /* Step 2: Initialize GPIO for LED on PA5 */
+    GPIO_LED_Init();
+
+    /* Step 3: Get actual APB1 timer clock frequency */
     uint32_t apb1_timer_clk = Get_APB1_Timer_Clock();
 
-    /* Configure TIM2 for 3-second periodic interrupts */
-    TIM_Config_t timer_config = {0};
-
-    if (apb1_timer_clk == 84000000U) {
-        /* 84 MHz APB1 clock: Configure for 10 kHz timer frequency */
-        timer_config.prescaler = 8399U;   /* 84 MHz / 8400 = 10 kHz */
-        timer_config.period = 29999U;     /* 10 kHz / 30000 = 0.333 Hz (3 sec) */
+    /* Step 4: Prepare timer configuration
+     * For 84 MHz APB1 timer clock (with APB1 prescaler = 2):
+     * - Prescaler = 8399 -> 84 MHz / 8400 = 10,000 Hz
+     * - Period = 29999 -> 10 kHz / 30,000 = 0.333 Hz = 3 seconds
+     */
+    if (apb1_timer_clk == 84000000) {
+        timer_config.prescaler = 8399;   // 84 MHz / 8400 = 10 kHz
+        timer_config.period = 29999;     // 10 kHz / 30,000 = 3 seconds
     } else {
-        /* 16 MHz APB1 clock: Configure for 10 kHz timer frequency */
-        timer_config.prescaler = 1599U;   /* 16 MHz / 1600 = 10 kHz */
-        timer_config.period = 29999U;     /* 10 kHz / 30000 = 0.333 Hz (3 sec) */
+        timer_config.prescaler = 1599;   // 16 MHz / 1600 = 10 kHz
+        timer_config.period = 29999;     // 10 kHz / 30,000 = 3 seconds
+    }
+    timer_config.priority = 0;           // Highest interrupt priority
+
+    /* Step 5: Initialize timer device using driver */
+    g_timer2_handle.instance = TIM2;     // Target TIM2 peripheral
+    init_status = TIM_Init(&g_timer2_handle, &timer_config);
+
+    if (init_status != TIM_STATUS_OK) {
+        Error_Handler();
     }
 
-    /* Initialize TIM2 driver with configuration */
-    TIM2_Init(&timer_config);
+    /* Step 6: Register user callback for timer interrupts */
+    init_status = TIM_RegisterCallback(&g_timer2_handle, TimerPeriodElapsedCallback);
 
-    /* Register callback for timer period elapsed events */
-    TIM2_RegisterCallback(TIM2_PeriodElapsedCallback);
+    if (init_status != TIM_STATUS_OK) {
+        Error_Handler();
+    }
 
-    /* Start the timer */
-    TIM2_Start();
+    /* Step 7: Start timer */
+    init_status = TIM_Start(&g_timer2_handle);
 
-    /* Main application loop - timer interrupts handle LED toggling */
-    while (1)
-    {
-        /* Application can perform other tasks here */
-        /* LED toggling is handled by TIM2_PeriodElapsedCallback() */
+    if (init_status != TIM_STATUS_OK) {
+        Error_Handler();
+    }
 
-        /* Optional: Enter low-power mode between interrupts */
-        /* __WFI(); */
+    /* Step 8: Main loop - CPU is free for other tasks */
+    while (1) {
+        /* Timer runs independently via interrupts
+         * The callback (TimerPeriodElapsedCallback) handles LED toggling
+         * You can add other non-blocking tasks here */
+
+        /* Monitor timer state for error detection */
+        TIM_State_t timer_state = TIM_GetState(&g_timer2_handle);
+
+        /* Check for errors in timer state */
+        if (timer_state != TIM_STATE_RUNNING) {
+            Error_Handler();
+        }
+
+        /* Optional: Low-power mode */
+        // __WFI();  // Wait for interrupt
     }
 }
+
+/* ============================================================================
+ * CALLBACK FUNCTION - Called by timer driver on period elapsed
+ * ============================================================================*/
+
+/**
+ * @brief Timer period elapsed callback
+ * Called by timer driver whenever the timer period expires
+ * This implements the callback registration pattern from device driver
+ */
+static void TimerPeriodElapsedCallback(void)
+{
+    /* Toggle LED state */
+    LED_TOGGLE();
+
+    /* Increment debug counter for diagnostics */
+    g_led_toggle_count++;
+}
+
+/* ============================================================================
+ * HARDWARE INITIALIZATION FUNCTIONS
+ * ============================================================================*/
 
 /**
  * @brief Initialize GPIO PA5 as output for LED
  */
-void GPIO_Init(void)
+static void GPIO_LED_Init(void)
 {
     /* Enable GPIOA clock */
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
@@ -96,101 +168,102 @@ void GPIO_Init(void)
     LED_PORT->PUPDR &= ~(3U << (LED_PIN * 2));   // No pull (00)
 
     /* Initial state: LED OFF */
-    LED_OFF;
+    LED_OFF();
 }
 
 /**
  * @brief Get APB1 timer clock frequency
+ * APB1 prescaler affects both APB1 clock and timer clock
+ *
  * @retval APB1 timer clock in Hz
  */
-uint32_t Get_APB1_Timer_Clock(void)
+static uint32_t Get_APB1_Timer_Clock(void)
 {
     uint32_t pclk1;
     uint32_t apb1_prescaler;
 
-    /* Get system clock (default is 16 MHz HSI) */
+    /* Update system clock variable */
     SystemCoreClockUpdate();
 
-    /* Get APB1 prescaler from RCC_CFGR register */
-    apb1_prescaler = (RCC->CFGR >> 10) & 0x7;  // PPRE1[2:0] bits
+    /* Get APB1 prescaler from RCC_CFGR register (PPRE1[2:0] bits 12-10) */
+    apb1_prescaler = (RCC->CFGR >> 10) & 0x7;
 
-    /* Calculate PCLK1 (APB1 clock) */
+    /* Calculate PCLK1 (APB1 clock) based on prescaler */
     if (apb1_prescaler < 4) {
-        pclk1 = SystemCoreClock;  // No division
+        /* No division - prescaler 0,1,2,3 = divide by 1 */
+        pclk1 = SystemCoreClock;
     } else {
-        pclk1 = SystemCoreClock >> (apb1_prescaler - 3);  // Divide by 2, 4, 8, or 16
+        /* Division by 2, 4, 8, or 16 */
+        pclk1 = SystemCoreClock >> (apb1_prescaler - 3);
     }
 
-    /* Timer clock is 2x APB1 clock if APB1 prescaler != 1 */
+    /* Timer clock is 2x APB1 clock if APB1 has prescaler != 1 */
     if (apb1_prescaler >= 4) {
-        return pclk1 * 2;  // Timer clock = 2 × PCLK1
+        return pclk1 * 2;  /* Timer clock = 2 × PCLK1 */
     } else {
-        return pclk1;      // Timer clock = PCLK1
+        return pclk1;      /* Timer clock = PCLK1 */
     }
 }
 
 /**
  * @brief Configure system clock to 84 MHz using HSI and PLL
+ * Initializes clock tree and enables peripheral clocks
  */
-void SystemClock_Config(void)
+static void SystemClock_Config(void)
 {
-    /* Enable HSI (16 MHz internal oscillator) */
+    /* Enable HSI (High-Speed Internal 16 MHz oscillator) */
     RCC->CR |= RCC_CR_HSION;
-    while (!(RCC->CR & RCC_CR_HSIRDY));  // Wait until HSI is ready
+    while (!(RCC->CR & RCC_CR_HSIRDY));  /* Wait until HSI is stable */
 
-    /* Configure PLL: HSI / 16 × 168 / 2 = 84 MHz */
-    RCC->PLLCFGR = 0;  // Reset value
-    RCC->PLLCFGR |= (16 << RCC_PLLCFGR_PLLM_Pos);   // PLLM = 16 (16 MHz / 16 = 1 MHz)
-    RCC->PLLCFGR |= (168 << RCC_PLLCFGR_PLLN_Pos);  // PLLN = 168 (1 MHz × 168 = 168 MHz)
-    RCC->PLLCFGR |= (0 << RCC_PLLCFGR_PLLP_Pos);    // PLLP = 2 (168 MHz / 2 = 84 MHz)
-    RCC->PLLCFGR &= ~RCC_PLLCFGR_PLLSRC;            // PLL source = HSI
+    /* Configure PLL: HSI / 16 × 168 / 2 = 84 MHz
+     * PLLM = 16: Input frequency = 16 MHz / 16 = 1 MHz
+     * PLLN = 168: Output frequency = 1 MHz × 168 = 168 MHz
+     * PLLP = 2: Final frequency = 168 MHz / 2 = 84 MHz
+     */
+    RCC->PLLCFGR = 0;
+    RCC->PLLCFGR |= (16 << RCC_PLLCFGR_PLLM_Pos);   /* PLLM = 16 */
+    RCC->PLLCFGR |= (168 << RCC_PLLCFGR_PLLN_Pos);  /* PLLN = 168 */
+    RCC->PLLCFGR |= (0 << RCC_PLLCFGR_PLLP_Pos);    /* PLLP = 2 */
+    RCC->PLLCFGR &= ~RCC_PLLCFGR_PLLSRC;            /* PLL source = HSI */
 
     /* Enable PLL */
     RCC->CR |= RCC_CR_PLLON;
-    while (!(RCC->CR & RCC_CR_PLLRDY));  // Wait until PLL is ready
+    while (!(RCC->CR & RCC_CR_PLLRDY));  /* Wait until PLL is locked */
 
-    /* Configure Flash latency for 84 MHz */
-    FLASH->ACR = FLASH_ACR_LATENCY_2WS | FLASH_ACR_ICEN | FLASH_ACR_DCEN | FLASH_ACR_PRFTEN;
+    /* Configure Flash latency for 84 MHz operation */
+    FLASH->ACR = FLASH_ACR_LATENCY_2WS  /* 2 wait states for 84 MHz */
+               | FLASH_ACR_ICEN          /* Instruction cache enable */
+               | FLASH_ACR_DCEN          /* Data cache enable */
+               | FLASH_ACR_PRFTEN;       /* Prefetch buffer enable */
 
-    /* Configure AHB, APB1, APB2 prescalers */
-    RCC->CFGR |= RCC_CFGR_HPRE_DIV1;   // AHB = 84 MHz
-    RCC->CFGR |= RCC_CFGR_PPRE1_DIV2;  // APB1 = 42 MHz (TIM2 clock = 84 MHz)
-    RCC->CFGR |= RCC_CFGR_PPRE2_DIV1;  // APB2 = 84 MHz
+    /* Configure prescalers for AHB, APB1, and APB2 */
+    RCC->CFGR |= RCC_CFGR_HPRE_DIV1;    /* AHB prescaler = 1 (84 MHz) */
+    RCC->CFGR |= RCC_CFGR_PPRE1_DIV2;   /* APB1 prescaler = 2 (42 MHz, Timer clk = 84 MHz) */
+    RCC->CFGR |= RCC_CFGR_PPRE2_DIV1;   /* APB2 prescaler = 1 (84 MHz) */
 
-    /* Select PLL as system clock */
+    /* Select PLL as system clock source */
     RCC->CFGR |= RCC_CFGR_SW_PLL;
-    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL);  // Wait until PLL is system clock
+    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL);
 
-    /* Update SystemCoreClock variable */
+    /* Update SystemCoreClock global variable */
     SystemCoreClockUpdate();
 }
 
-/**
- * @brief TIM2 period elapsed callback function
- * @note Called from TIM2_IRQHandler when timer period expires
- * @note Toggles LED and increments debug counter
- */
-void TIM2_PeriodElapsedCallback(void)
-{
-    /* Toggle LED state */
-    LED_TOGGLE;
-
-    /* Increment debug counter */
-    toggle_count++;
-}
+/* ============================================================================
+ * ERROR HANDLING
+ * ============================================================================*/
 
 /**
- * @brief Error handler - infinite loop
+ * @brief Error handler - enters infinite loop with interrupts disabled
+ * Called when fatal error is detected
  */
 void Error_Handler(void)
 {
-    /* Disable interrupts */
+    /* Disable all interrupts */
     __disable_irq();
 
-    /* Infinite loop */
-    while (1)
-    {
-        /* Stay here if error occurs */
+    /* Infinite loop - system halted */
+    while (1) {
+        /* Remain here indefinitely */
     }
 }
-
