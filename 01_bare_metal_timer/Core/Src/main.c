@@ -3,13 +3,14 @@
  * @file    main.c
  * @brief   Bare-metal timer application - LED blinks every 3 seconds
  *          Uses device driver pattern with callback registration
- * @date    2026-01-24
+ * @date    2026-01-31
  ******************************************************************************
  */
 
 #include "stm32f401xe.h"
 #include "system_stm32f4xx.h"
 #include "tim_driver.h"
+#include <stddef.h>
 
 /* ============================================================================
  * GPIO CONFIGURATION FOR LED
@@ -27,14 +28,7 @@
  * GLOBAL VARIABLES & STATISTICS
  * ============================================================================*/
 
-/**
- * @brief Timer device handle - encapsulates timer state
- */
-static TIM_Handle_t g_timer2_handle;
-
-/**
- * @brief Debug counter - incremented by callback
- */
+static TIM_Handle_t *g_timer2_handle = NULL;
 volatile uint32_t g_led_toggle_count = 0;
 
 /* ============================================================================
@@ -44,7 +38,6 @@ volatile uint32_t g_led_toggle_count = 0;
 static void GPIO_LED_Init(void);
 static void SystemClock_Config(void);
 static uint32_t Get_APB1_Timer_Clock(void);
-static void TimerPeriodElapsedCallback(void);
 void Error_Handler(void);
 
 /* ============================================================================
@@ -57,7 +50,7 @@ void Error_Handler(void);
  */
 int main(void)
 {
-    TIM_Status_t init_status;
+    TIM_Status_t status;
     TIM_Config_t timer_config;
 
     /* Step 1: Configure system clock to 84 MHz */
@@ -69,78 +62,50 @@ int main(void)
     /* Step 3: Get actual APB1 timer clock frequency */
     uint32_t apb1_timer_clk = Get_APB1_Timer_Clock();
 
-    /* Step 4: Prepare timer configuration
-     * For 84 MHz APB1 timer clock (with APB1 prescaler = 2):
-     * - Prescaler = 8399 -> 84 MHz / 8400 = 10,000 Hz
-     * - Period = 29999 -> 10 kHz / 30,000 = 0.333 Hz = 3 seconds
-     */
+    /* Step 4: Prepare timer configuration */
     if (apb1_timer_clk == 84000000) {
-        timer_config.prescaler = 8399;   // 84 MHz / 8400 = 10 kHz
-        timer_config.period = 29999;     // 10 kHz / 30,000 = 3 seconds
+        timer_config.prescaler = 8399;   /* 84 MHz / 8400 = 10 kHz */
+        timer_config.period = 29999;     /* 10 kHz / 30,000 = 3 seconds */
     } else {
-        timer_config.prescaler = 1599;   // 16 MHz / 1600 = 10 kHz
-        timer_config.period = 29999;     // 10 kHz / 30,000 = 3 seconds
+        timer_config.prescaler = 1599;   /* 16 MHz / 1600 = 10 kHz */
+        timer_config.period = 29999;
     }
-    timer_config.priority = 0;           // Highest interrupt priority
+    timer_config.priority = 0;
 
-    /* Step 5: Initialize timer device using driver */
-    g_timer2_handle.instance = TIM2;     // Target TIM2 peripheral
-    init_status = TIM_Init(&g_timer2_handle, &timer_config);
-
-    if (init_status != TIM_STATUS_OK) {
+    /* Step 5: Open and configure timer */
+    g_timer2_handle = TIM_Open(TIM_ID_2);
+    if (g_timer2_handle == NULL) {
         Error_Handler();
     }
 
-    /* Step 6: Register user callback for timer interrupts */
-    init_status = TIM_RegisterCallback(&g_timer2_handle, TimerPeriodElapsedCallback);
-
-    if (init_status != TIM_STATUS_OK) {
+    status = TIM_Write(g_timer2_handle, &timer_config);
+    if (status != TIM_STATUS_OK) {
         Error_Handler();
     }
 
-    /* Step 7: Start timer */
-    init_status = TIM_Start(&g_timer2_handle);
-
-    if (init_status != TIM_STATUS_OK) {
+    /* Step 6: Start timer */
+    status = TIM_Control(g_timer2_handle, TIM_CMD_START, NULL);
+    if (status != TIM_STATUS_OK) {
         Error_Handler();
     }
 
-    /* Step 8: Main loop - CPU is free for other tasks */
+    /* Step 7: Main loop - actively poll for events */
+    TIM_Data_t timer_data;
     while (1) {
-        /* Timer runs independently via interrupts
-         * The callback (TimerPeriodElapsedCallback) handles LED toggling
-         * You can add other non-blocking tasks here */
-
-        /* Monitor timer state for error detection */
-        TIM_State_t timer_state = TIM_GetState(&g_timer2_handle);
-
-        /* Check for errors in timer state */
-        if (timer_state != TIM_STATE_RUNNING) {
-            Error_Handler();
+        TIM_Read(g_timer2_handle, &timer_data);
+        if (timer_data.event_occurred) {
+            LED_TOGGLE();
+            g_led_toggle_count++;
+            TIM_Control(g_timer2_handle, TIM_CMD_CLEAR_EVENT, NULL);
         }
 
-        /* Optional: Low-power mode */
-        // __WFI();  // Wait for interrupt
+        if (timer_data.state != TIM_STATE_RUNNING) {
+            Error_Handler();
+        }
     }
 }
 
-/* ============================================================================
- * CALLBACK FUNCTION - Called by timer driver on period elapsed
- * ============================================================================*/
-
-/**
- * @brief Timer period elapsed callback
- * Called by timer driver whenever the timer period expires
- * This implements the callback registration pattern from device driver
- */
-static void TimerPeriodElapsedCallback(void)
-{
-    /* Toggle LED state */
-    LED_TOGGLE();
-
-    /* Increment debug counter for diagnostics */
-    g_led_toggle_count++;
-}
+/* No callback used in refactored design; main polls the driver */
 
 /* ============================================================================
  * HARDWARE INITIALIZATION FUNCTIONS
