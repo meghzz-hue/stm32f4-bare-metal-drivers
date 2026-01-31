@@ -430,7 +430,7 @@ TIM_Handle_t *h5 = TIM_Open(TIM_ID_2);  // ❌ Fails (already allocated)
 2. Verify LED toggles every 3 seconds
 3. Experiment with different timers (TIM3, TIM4, TIM5)
 4. Try different periods (modify `config.period_ms`)
-5. Proceed to **Project 02: Software Timers** to learn:
+5. Experiment with creating **Software Timers** to learn:
    - Multiple concurrent timers
    - Software timer management
    - Task scheduling without RTOS
@@ -450,4 +450,5 @@ TIM_Handle_t *h5 = TIM_Open(TIM_ID_2);  // ❌ Fails (already allocated)
   - Chapter 7: Peripherals (Device Driver Philosophy)
   - Chapter 7.2: The Device Driver Philosophy (5-point pattern)
   - Chapter 7.3: A Simple Timer Driver
+
 
