@@ -435,7 +435,7 @@ TIM_Handle_t *h5 = TIM_Open(TIM_ID_2);  // ❌ Fails (already allocated)
    - Software timer management
    - Task scheduling without RTOS
    - Callback-based events
-
+6. CLI integration 
 ---
 
 ## 📚 Learning Resources
@@ -450,3 +450,4 @@ TIM_Handle_t *h5 = TIM_Open(TIM_ID_2);  // ❌ Fails (already allocated)
   - Chapter 7: Peripherals (Device Driver Philosophy)
   - Chapter 7.2: The Device Driver Philosophy (5-point pattern)
   - Chapter 7.3: A Simple Timer Driver
+
