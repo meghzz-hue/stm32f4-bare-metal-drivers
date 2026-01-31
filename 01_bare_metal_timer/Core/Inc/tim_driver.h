@@ -1,37 +1,44 @@
 /**
  ******************************************************************************
  * @file    tim_driver.h
- * @brief   Bare-metal Timer driver header for STM32F401RE
- *          Implements device driver pattern with callback registration
- * @date    2026-01-24
+ * @brief   Bare-metal Timer driver header
+ *          Implements device driver philosophy: open/write/read/control/close
+ *          Hardware-agnostic public API; hardware details hidden in .c
+ * @date    2026-01-31
  ******************************************************************************
  */
 
 #ifndef TIM_DRIVER_H
 #define TIM_DRIVER_H
 
-#include "stm32f401xe.h"
 #include <stdint.h>
 #include <stdbool.h>
 
-/* ============================================================================
- * TYPE DEFINITIONS - Device Driver Pattern
- * ============================================================================*/
-
+/* ---------------------------------------------------------------------------
+ * TIMER DEVICE ENUMERATION (Hardware-independent ID)
+ * ---------------------------------------------------------------------------*/
 /**
- * @brief Timer status codes
+ * @brief Timer device identifier (opaque to application)
+ * Maps to hardware peripheral but application need not know implementation
  */
 typedef enum {
-    TIM_STATUS_OK           = 0x00,    /**< Operation successful */
-    TIM_STATUS_ERROR        = 0x01,    /**< Operation failed */
-    TIM_STATUS_INVALID_CFG  = 0x02,    /**< Invalid configuration */
-    TIM_STATUS_NOT_INIT     = 0x03,    /**< Device not initialized */
-    TIM_STATUS_ALREADY_INIT = 0x04     /**< Device already initialized */
+    TIM_ID_2 = 0,  /**< Timer 2 */
+    TIM_ID_3 = 1,  /**< Timer 3 */
+    TIM_ID_4 = 2,  /**< Timer 4 */
+    TIM_ID_5 = 3,  /**< Timer 5 */
+} TIM_ID_t;
+
+/* ---------------------------------------------------------------------------
+ * STATUS & STATE
+ * ---------------------------------------------------------------------------*/
+typedef enum {
+    TIM_STATUS_OK           = 0x00,
+    TIM_STATUS_ERROR        = 0x01,
+    TIM_STATUS_INVALID_CFG  = 0x02,
+    TIM_STATUS_NOT_INIT     = 0x03,
+    TIM_STATUS_ALREADY_INIT = 0x04
 } TIM_Status_t;
 
-/**
- * @brief Timer state enumeration
- */
 typedef enum {
     TIM_STATE_UNINITIALIZED = 0x00,
     TIM_STATE_INITIALIZED   = 0x01,
@@ -39,122 +46,106 @@ typedef enum {
     TIM_STATE_STOPPED       = 0x03
 } TIM_State_t;
 
-/**
- * @brief Timer configuration structure
- */
+/* ---------------------------------------------------------------------------
+ * CONFIG & DATA STRUCTURES
+ * ---------------------------------------------------------------------------*/
 typedef struct {
-    uint16_t prescaler;              /**< Timer prescaler (0-65535) */
-    uint32_t period;                 /**< Auto-reload value (0-65535 for 16-bit mode) */
-    uint8_t priority;                /**< NVIC interrupt priority (0-15) */
+    uint16_t prescaler;    /**< PSC register value */
+    uint32_t period;       /**< ARR register value */
+    uint8_t priority;      /**< NVIC priority (0 = highest) */
 } TIM_Config_t;
 
 /**
- * @brief Timer callback function pointer type
- * Called when timer interrupt occurs
+ * @brief Timer control commands for TIM_Control() ioctl
+ * TIM_CMD_START    - Enable counter and enter RUNNING state
+ * TIM_CMD_STOP     - Disable counter and enter STOPPED state
+ * TIM_CMD_RESET    - Clear counter and event flags
+ * TIM_CMD_CLEAR_EVENT - Clear event flag (app must call after handling event)
  */
-typedef void (*TIM_Callback_t)(void);
+typedef enum {
+    TIM_CMD_START = 0,      /**< Start timer */
+    TIM_CMD_STOP,           /**< Stop timer */
+    TIM_CMD_RESET,          /**< Reset counter */
+    TIM_CMD_CLEAR_EVENT     /**< Clear event flag */
+} TIM_Command_t;
 
-/**
- * @brief Timer device handle - encapsulates timer state and configuration
- * Implements device driver pattern for state management
- */
 typedef struct {
-    TIM_TypeDef *instance;           /**< Pointer to timer peripheral (TIM2, TIM3, etc.) */
-    TIM_Config_t config;             /**< Current timer configuration */
-    TIM_State_t state;               /**< Current device state */
-    TIM_Callback_t period_elapsed_cb;/**< User callback for period elapsed event */
-    uint32_t event_counter;          /**< Number of timer events occurred */
-    IRQn_Type irq_number;            /**< Timer IRQ number */
-} TIM_Handle_t;
+    uint32_t counter_value;/**< Snapshot of CNT register */
+    uint32_t event_count;  /**< Number of update events seen */
+    TIM_State_t state;     /**< Current driver state */
+    uint8_t event_occurred;/**< Non-zero if new event pending */
+} TIM_Data_t;
 
-/* ============================================================================
- * DRIVER INTERFACE FUNCTIONS
- * ============================================================================*/
+/* ---------------------------------------------------------------------------
+ * OPAQUE HANDLE (internals hidden from application)
+ * ---------------------------------------------------------------------------*/
+/**
+ * @brief Opaque timer device handle
+ * Application receives pointer but never accesses internals.
+ * Defined in tim_driver.c; only pointer used by application.
+ */
+typedef struct TIM_Handle TIM_Handle_t;
+
+/* ---------------------------------------------------------------------------
+ * PUBLIC DRIVER API (File-like interface)
+ * ---------------------------------------------------------------------------*/
 
 /**
- * @brief Initialize timer device with given configuration
- * Implements device driver initialization pattern
+ * @brief Open timer device and allocate a handle
+ * @param timer_id: Timer device ID (TIM_ID_2, TIM_ID_3, etc.)
+ * @return Pointer to allocated handle or NULL on failure
  *
- * @param handle: Pointer to timer device handle to be initialized
- * @param config: Pointer to timer configuration structure
- * @retval TIM_Status_t: Status code (TIM_STATUS_OK or error code)
+ * Behavior:
+ *  - Allocates handle from static pool (no malloc)
+ *  - Initializes hardware (clock, registers)
+ *  - Returns handle for later write/read/control/close calls
  */
-TIM_Status_t TIM_Init(TIM_Handle_t *handle, const TIM_Config_t *config);
+TIM_Handle_t *TIM_Open(TIM_ID_t timer_id);
 
 /**
- * @brief Start timer counter
+ * @brief Configure timer device (write operation)
+ * @param handle: Device handle from TIM_Open
+ * @param config: Prescaler, period, and priority configuration
+ * @return Status code
  *
- * @param handle: Pointer to initialized timer device handle
- * @retval TIM_Status_t: Status code
+ * Configures the timer with prescaler, auto-reload period, and NVIC priority.
+ * Must be called after TIM_Open and before TIM_Control(START).
  */
-TIM_Status_t TIM_Start(TIM_Handle_t *handle);
+TIM_Status_t TIM_Write(TIM_Handle_t *handle, const TIM_Config_t *config);
 
 /**
- * @brief Stop timer counter
+ * @brief Read device state and any pending events (read operation)
+ * @param handle: Device handle from TIM_Open
+ * @param data_out: Snapshot of counter, event count, state, and event flag
+ * @return Status code
  *
- * @param handle: Pointer to initialized timer device handle
- * @retval TIM_Status_t: Status code
+ * Returns current device state without side effects.
+ * Application polls this to detect timer events.
  */
-TIM_Status_t TIM_Stop(TIM_Handle_t *handle);
+TIM_Status_t TIM_Read(TIM_Handle_t *handle, TIM_Data_t *data_out);
 
 /**
- * @brief Get current counter value
+ * @brief Control device operations (ioctl)
+ * @param handle: Device handle from TIM_Open
+ * @param cmd: Control command (TIM_CMD_START, TIM_CMD_STOP, etc.)
+ * @param arg: Optional command argument (NULL for most commands)
+ * @return Status code
  *
- * @param handle: Pointer to initialized timer device handle
- * @param counter: Pointer to store counter value
- * @retval TIM_Status_t: Status code
+ * Issues control commands to the device:
+ *  - TIM_CMD_START     : Enable counter, enter RUNNING state
+ *  - TIM_CMD_STOP      : Disable counter, enter STOPPED state
+ *  - TIM_CMD_RESET     : Clear counter and event flags
+ *  - TIM_CMD_CLEAR_EVENT: Clear event flag after application processes event
  */
-TIM_Status_t TIM_GetCounter(TIM_Handle_t *handle, uint32_t *counter);
+TIM_Status_t TIM_Control(TIM_Handle_t *handle, TIM_Command_t cmd, void *arg);
 
 /**
- * @brief Register user callback for period elapsed event
- * Implements callback registration pattern
+ * @brief Close device and release handle (close operation)
+ * @param handle: Device handle from TIM_Open
+ * @return Status code
  *
- * @param handle: Pointer to initialized timer device handle
- * @param callback: Function pointer to user callback
- * @retval TIM_Status_t: Status code
+ * Stops timer, disables clock and interrupts, returns handle to pool.
  */
-TIM_Status_t TIM_RegisterCallback(TIM_Handle_t *handle, TIM_Callback_t callback);
-
-/**
- * @brief Get timer device state
- *
- * @param handle: Pointer to timer device handle
- * @retval TIM_State_t: Current device state
- */
-TIM_State_t TIM_GetState(TIM_Handle_t *handle);
-
-/**
- * @brief Get timer event counter (number of interrupts occurred)
- *
- * @param handle: Pointer to timer device handle
- * @retval Number of timer events
- */
-uint32_t TIM_GetEventCount(TIM_Handle_t *handle);
-
-/**
- * @brief De-initialize timer device
- * Releases resources and resets state
- *
- * @param handle: Pointer to timer device handle
- * @retval TIM_Status_t: Status code
- */
-TIM_Status_t TIM_DeInit(TIM_Handle_t *handle);
-
-/* ============================================================================
- * INTERNAL/IRQ HANDLER FUNCTIONS (Not typically called by user)
- * ============================================================================*/
-
-/**
- * @brief Internal interrupt handler for TIM2
- * Called by vector table - manages all TIM2 registered handles
- */
-void TIM2_IRQHandler(void);
-
-/**
- * @brief Internal interrupt handler for TIM3
- * Called by vector table - manages all TIM3 registered handles
- */
-void TIM3_IRQHandler(void);
+TIM_Status_t TIM_Close(TIM_Handle_t *handle);
 
 #endif /* TIM_DRIVER_H */
