@@ -1,397 +1,325 @@
 /**
  ******************************************************************************
  * @file    tim_driver.c
- * @brief   Bare-metal Timer driver implementation for STM32F401RE
- *          Implements device driver pattern with callback management
- * @date    2026-01-24
+ * @brief   Bare-metal Timer driver implementation
+ *          Implements device driver philosophy: open/write/read/control/close
+ *          Hardware details hidden from application
+ * @date    2026-01-31
  ******************************************************************************
  */
 
 #include "tim_driver.h"
+#include "stm32f401xe.h"
 #include <stddef.h>
+#include <string.h>
 
-/* ============================================================================
- * DRIVER INTERNAL STATE MANAGEMENT
- * ============================================================================*/
+/* ---------------------------------------------------------------------------
+ * INTERNAL DATA STRUCTURES (Not in public header)
+ * ---------------------------------------------------------------------------*/
+typedef struct TIM_Handle {
+    TIM_TypeDef *instance;        /**< Hardware peripheral (TIM2/TIM3/...) */
+    TIM_Config_t config;
+    TIM_State_t state;
+    volatile uint8_t event_flag;  /**< Set by ISR when period elapses */
+    uint32_t event_counter;       /**< Count of update events */
+    IRQn_Type irq_number;         /**< IRQ number cached for NVIC ops */
+    TIM_ID_t timer_id;            /**< Device ID */
+} TIM_Handle_t_Internal;
 
-/**
- * @brief Static storage for timer handles
- * Allows IRQ handlers to access device context
- */
-static TIM_Handle_t *g_tim2_handle = NULL;
-static TIM_Handle_t *g_tim3_handle = NULL;
+/* ---------------------------------------------------------------------------
+ * Static pool allocation (no dynamic malloc)
+ * ---------------------------------------------------------------------------*/
+#define MAX_TIMER_INSTANCES 4
+static TIM_Handle_t_Internal g_timer_pool[MAX_TIMER_INSTANCES];
+static bool g_timer_pool_used[MAX_TIMER_INSTANCES] = {0};
+static TIM_Handle_t_Internal *g_timer_instances[MAX_TIMER_INSTANCES] = {0};
 
-/* ============================================================================
- * HELPER FUNCTIONS
- * ============================================================================*/
-
-/**
- * @brief Validate timer handle
- * @param handle: Pointer to timer handle
- * @retval true if handle is valid, false otherwise
- */
-static bool TIM_IsHandleValid(const TIM_Handle_t *handle)
+/* ---------------------------------------------------------------------------
+ * Timer ID to hardware mapping
+ * ---------------------------------------------------------------------------*/
+static TIM_TypeDef *tim_id_to_instance(TIM_ID_t id)
 {
-    if (handle == NULL) {
-        return false;
+    switch (id) {
+        case TIM_ID_2: return TIM2;
+        case TIM_ID_3: return TIM3;
+        case TIM_ID_4: return TIM4;
+        case TIM_ID_5: return TIM5;
+        default: return NULL;
     }
-    if (handle->instance == NULL) {
-        return false;
-    }
-    return true;
 }
 
-/**
- * @brief Enable timer peripheral clock
- * @param handle: Pointer to timer handle
- * @retval TIM_Status_t: Status code
- */
-static TIM_Status_t TIM_EnableClock(TIM_Handle_t *handle)
+static IRQn_Type tim_id_to_irq(TIM_ID_t id)
+{
+    switch (id) {
+        case TIM_ID_2: return TIM2_IRQn;
+        case TIM_ID_3: return TIM3_IRQn;
+        case TIM_ID_4: return TIM4_IRQn;
+        case TIM_ID_5: return TIM5_IRQn;
+        default: return -1;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * Pool management
+ * ---------------------------------------------------------------------------*/
+static TIM_Handle_t_Internal *TIM_AllocHandle(TIM_ID_t id)
+{
+    for (int i = 0; i < MAX_TIMER_INSTANCES; ++i) {
+        if (!g_timer_pool_used[i]) {
+            g_timer_pool_used[i] = true;
+            memset(&g_timer_pool[i], 0, sizeof(TIM_Handle_t_Internal));
+            g_timer_pool[i].timer_id = id;
+            return &g_timer_pool[i];
+        }
+    }
+    return NULL;
+}
+
+static void TIM_FreeHandle(TIM_Handle_t_Internal *h)
+{
+    if (h >= g_timer_pool && h < g_timer_pool + MAX_TIMER_INSTANCES) {
+        int idx = (int)(h - g_timer_pool);
+        g_timer_pool_used[idx] = false;
+    }
+}
+
+static TIM_Handle_t_Internal *TIM_FindInstance(TIM_TypeDef *instance)
+{
+    for (int i = 0; i < MAX_TIMER_INSTANCES; ++i) {
+        if (g_timer_instances[i] != NULL && g_timer_instances[i]->instance == instance) {
+            return g_timer_instances[i];
+        }
+    }
+    return NULL;
+}
+
+static bool TIM_RegisterInstance(TIM_Handle_t_Internal *handle)
+{
+    for (int i = 0; i < MAX_TIMER_INSTANCES; ++i) {
+        if (g_timer_instances[i] == NULL) {
+            g_timer_instances[i] = handle;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void TIM_UnregisterInstance(TIM_Handle_t_Internal *handle)
+{
+    for (int i = 0; i < MAX_TIMER_INSTANCES; ++i) {
+        if (g_timer_instances[i] == handle) {
+            g_timer_instances[i] = NULL;
+            return;
+        }
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * Clock helpers
+ * ---------------------------------------------------------------------------*/
+static TIM_Status_t TIM_EnableClock(TIM_Handle_t_Internal *handle)
 {
     if (handle->instance == TIM2) {
         RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
         return TIM_STATUS_OK;
-    }
-    else if (handle->instance == TIM3) {
+    } else if (handle->instance == TIM3) {
         RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
         return TIM_STATUS_OK;
-    }
-    else if (handle->instance == TIM4) {
+    } else if (handle->instance == TIM4) {
         RCC->APB1ENR |= RCC_APB1ENR_TIM4EN;
         return TIM_STATUS_OK;
-    }
-    else if (handle->instance == TIM5) {
+    } else if (handle->instance == TIM5) {
         RCC->APB1ENR |= RCC_APB1ENR_TIM5EN;
         return TIM_STATUS_OK;
     }
-
     return TIM_STATUS_ERROR;
 }
 
-/**
- * @brief Disable timer peripheral clock
- * @param handle: Pointer to timer handle
- * @retval TIM_Status_t: Status code
- */
-static TIM_Status_t TIM_DisableClock(TIM_Handle_t *handle)
+static TIM_Status_t TIM_DisableClock(TIM_Handle_t_Internal *handle)
 {
     if (handle->instance == TIM2) {
         RCC->APB1ENR &= ~RCC_APB1ENR_TIM2EN;
         return TIM_STATUS_OK;
-    }
-    else if (handle->instance == TIM3) {
+    } else if (handle->instance == TIM3) {
         RCC->APB1ENR &= ~RCC_APB1ENR_TIM3EN;
         return TIM_STATUS_OK;
-    }
-    else if (handle->instance == TIM4) {
+    } else if (handle->instance == TIM4) {
         RCC->APB1ENR &= ~RCC_APB1ENR_TIM4EN;
         return TIM_STATUS_OK;
-    }
-    else if (handle->instance == TIM5) {
+    } else if (handle->instance == TIM5) {
         RCC->APB1ENR &= ~RCC_APB1ENR_TIM5EN;
         return TIM_STATUS_OK;
     }
-
     return TIM_STATUS_ERROR;
 }
 
-/**
- * @brief Get NVIC IRQ number for timer
- * @param handle: Pointer to timer handle
- * @retval IRQn_Type: IRQ number for the timer
- */
-static IRQn_Type TIM_GetIRQNumber(TIM_Handle_t *handle)
+/* ---------------------------------------------------------------------------
+ * Public API - Open/Write/Read/Control/Close
+ * ---------------------------------------------------------------------------*/
+
+TIM_Handle_t *TIM_Open(TIM_ID_t timer_id)
 {
-    if (handle->instance == TIM2) {
-        return TIM2_IRQn;
-    }
-    else if (handle->instance == TIM3) {
-        return TIM3_IRQn;
-    }
-    else if (handle->instance == TIM4) {
-        return TIM4_IRQn;
-    }
-    else if (handle->instance == TIM5) {
-        return TIM5_IRQn;
+    TIM_TypeDef *instance = tim_id_to_instance(timer_id);
+    if (instance == NULL) return NULL;
+
+    TIM_Handle_t_Internal *h = TIM_AllocHandle(timer_id);
+    if (h == NULL) return NULL;
+
+    h->instance = instance;
+    h->state = TIM_STATE_UNINITIALIZED;
+    h->event_flag = 0;
+    h->event_counter = 0;
+    h->irq_number = tim_id_to_irq(timer_id);
+
+    if (!TIM_RegisterInstance(h)) {
+        TIM_FreeHandle(h);
+        return NULL;
     }
 
-    return -1;
+    return (TIM_Handle_t *)h;
 }
 
-/**
- * @brief Store timer handle for IRQ handler access
- * @param handle: Pointer to timer handle
- */
-static void TIM_RegisterHandle(TIM_Handle_t *handle)
+TIM_Status_t TIM_Write(TIM_Handle_t *handle, const TIM_Config_t *config)
 {
-    if (handle->instance == TIM2) {
-        g_tim2_handle = handle;
-    }
-    else if (handle->instance == TIM3) {
-        g_tim3_handle = handle;
-    }
-}
-
-/**
- * @brief Unregister timer handle
- * @param handle: Pointer to timer handle
- */
-static void TIM_UnregisterHandle(TIM_Handle_t *handle)
-{
-    if (handle->instance == TIM2) {
-        g_tim2_handle = NULL;
-    }
-    else if (handle->instance == TIM3) {
-        g_tim3_handle = NULL;
-    }
-}
-
-/* ============================================================================
- * PUBLIC DRIVER INTERFACE IMPLEMENTATION
- * ============================================================================*/
-
-/**
- * @brief Initialize timer device with given configuration
- */
-TIM_Status_t TIM_Init(TIM_Handle_t *handle, const TIM_Config_t *config)
-{
-    /* Validate input parameters */
-    if (!TIM_IsHandleValid(handle) || config == NULL) {
-        return TIM_STATUS_INVALID_CFG;
-    }
-
-    /* Check if already initialized */
-    if (handle->state != TIM_STATE_UNINITIALIZED) {
+    TIM_Handle_t_Internal *h = (TIM_Handle_t_Internal *)handle;
+    if (h == NULL || config == NULL) return TIM_STATUS_INVALID_CFG;
+    if (h->state != TIM_STATE_UNINITIALIZED && h->state != TIM_STATE_STOPPED) {
+        /* allow reconfiguration only when stopped or uninitialized */
         return TIM_STATUS_ALREADY_INIT;
     }
 
-    /* Store configuration */
-    handle->config = *config;
+    h->config = *config;
 
-    /* Enable timer peripheral clock */
-    if (TIM_EnableClock(handle) != TIM_STATUS_OK) {
-        return TIM_STATUS_ERROR;
-    }
+    if (TIM_EnableClock(h) != TIM_STATUS_OK) return TIM_STATUS_ERROR;
 
-    /* Get IRQ number for this timer */
-    handle->irq_number = TIM_GetIRQNumber(handle);
-    if (handle->irq_number == -1) {
-        return TIM_STATUS_ERROR;
-    }
 
     /* Disable counter during configuration */
-    handle->instance->CR1 &= ~TIM_CR1_CEN;
+    h->instance->CR1 &= ~TIM_CR1_CEN;
 
-    /* Set prescaler (PSC register) */
-    handle->instance->PSC = config->prescaler;
-
-    /* Set auto-reload value (ARR register) */
-    handle->instance->ARR = config->period;
-
-    /* Reset counter to 0 */
-    handle->instance->CNT = 0;
+    /* Set PSC and ARR */
+    h->instance->PSC = config->prescaler;
+    h->instance->ARR = config->period;
+    h->instance->CNT = 0;
 
     /* Enable update interrupt */
-    handle->instance->DIER |= TIM_DIER_UIE;
+    h->instance->DIER |= TIM_DIER_UIE;
 
-    /* Generate update event to load PSC and ARR values */
-    handle->instance->EGR |= TIM_EGR_UG;
+    /* Generate update event to load PSC and ARR */
+    h->instance->EGR |= TIM_EGR_UG;
+    h->instance->SR &= ~TIM_SR_UIF;
 
-    /* Clear update interrupt flag (set by update event) */
-    handle->instance->SR &= ~TIM_SR_UIF;
+    NVIC_SetPriority(h->irq_number, config->priority);
+    NVIC_EnableIRQ(h->irq_number);
 
-    /* Configure NVIC for timer interrupt */
-    NVIC_SetPriority(handle->irq_number, config->priority);
-    NVIC_EnableIRQ(handle->irq_number);
+    /* Count up */
+    h->instance->CR1 &= ~TIM_CR1_DIR;
 
-    /* Set timer to count upward */
-    handle->instance->CR1 &= ~TIM_CR1_DIR;
-
-    /* Initialize state variables */
-    handle->state = TIM_STATE_INITIALIZED;
-    handle->event_counter = 0;
-    handle->period_elapsed_cb = NULL;
-
-    /* Register handle for IRQ access */
-    TIM_RegisterHandle(handle);
+    h->state = TIM_STATE_INITIALIZED;
+    h->event_counter = 0;
+    h->event_flag = 0;
 
     return TIM_STATUS_OK;
 }
 
-/**
- * @brief Start timer counter
- */
-TIM_Status_t TIM_Start(TIM_Handle_t *handle)
+TIM_Status_t TIM_Read(TIM_Handle_t *handle, TIM_Data_t *data_out)
 {
-    if (!TIM_IsHandleValid(handle)) {
-        return TIM_STATUS_INVALID_CFG;
-    }
-
-    if (handle->state == TIM_STATE_UNINITIALIZED) {
-        return TIM_STATUS_NOT_INIT;
-    }
-
-    /* Enable counter */
-    handle->instance->CR1 |= TIM_CR1_CEN;
-    handle->state = TIM_STATE_RUNNING;
-
+    TIM_Handle_t_Internal *h = (TIM_Handle_t_Internal *)handle;
+    if (h == NULL || data_out == NULL) return TIM_STATUS_INVALID_CFG;
+    data_out->counter_value = h->instance->CNT;
+    data_out->event_count = h->event_counter;
+    data_out->state = h->state;
+    data_out->event_occurred = h->event_flag ? 1 : 0;
     return TIM_STATUS_OK;
 }
 
-/**
- * @brief Stop timer counter
- */
-TIM_Status_t TIM_Stop(TIM_Handle_t *handle)
+TIM_Status_t TIM_Control(TIM_Handle_t *handle, TIM_Command_t cmd, void *arg)
 {
-    if (!TIM_IsHandleValid(handle)) {
-        return TIM_STATUS_INVALID_CFG;
+    TIM_Handle_t_Internal *h = (TIM_Handle_t_Internal *)handle;
+    if (h == NULL) return TIM_STATUS_INVALID_CFG;
+    switch (cmd) {
+        case TIM_CMD_START:
+            if (h->state == TIM_STATE_UNINITIALIZED) return TIM_STATUS_NOT_INIT;
+            h->instance->CR1 |= TIM_CR1_CEN;
+            h->state = TIM_STATE_RUNNING;
+            return TIM_STATUS_OK;
+        case TIM_CMD_STOP:
+            h->instance->CR1 &= ~TIM_CR1_CEN;
+            h->state = TIM_STATE_STOPPED;
+            return TIM_STATUS_OK;
+        case TIM_CMD_RESET:
+            h->instance->CNT = 0;
+            h->event_counter = 0;
+            h->event_flag = 0;
+            return TIM_STATUS_OK;
+        case TIM_CMD_CLEAR_EVENT:
+            h->event_flag = 0;
+            return TIM_STATUS_OK;
+        default:
+            return TIM_STATUS_INVALID_CFG;
+    }
+}
+
+TIM_Status_t TIM_Close(TIM_Handle_t *handle)
+{
+    TIM_Handle_t_Internal *h = (TIM_Handle_t_Internal *)handle;
+    if (h == NULL) return TIM_STATUS_INVALID_CFG;
+    /* Stop timer */
+    h->instance->CR1 &= ~TIM_CR1_CEN;
+    h->state = TIM_STATE_UNINITIALIZED;
+
+    if (h->irq_number != -1) {
+        NVIC_DisableIRQ(h->irq_number);
     }
 
-    if (handle->state == TIM_STATE_UNINITIALIZED) {
-        return TIM_STATUS_NOT_INIT;
-    }
-
-    /* Disable counter */
-    handle->instance->CR1 &= ~TIM_CR1_CEN;
-    handle->state = TIM_STATE_STOPPED;
-
+    TIM_DisableClock(h);
+    TIM_UnregisterInstance(h);
+    TIM_FreeHandle(h);
     return TIM_STATUS_OK;
 }
 
-/**
- * @brief Get current counter value
- */
-TIM_Status_t TIM_GetCounter(TIM_Handle_t *handle, uint32_t *counter)
-{
-    if (!TIM_IsHandleValid(handle) || counter == NULL) {
-        return TIM_STATUS_INVALID_CFG;
-    }
-
-    if (handle->state == TIM_STATE_UNINITIALIZED) {
-        return TIM_STATUS_NOT_INIT;
-    }
-
-    *counter = handle->instance->CNT;
-    return TIM_STATUS_OK;
-}
-
-/**
- * @brief Register user callback for period elapsed event
- */
-TIM_Status_t TIM_RegisterCallback(TIM_Handle_t *handle, TIM_Callback_t callback)
-{
-    if (!TIM_IsHandleValid(handle)) {
-        return TIM_STATUS_INVALID_CFG;
-    }
-
-    if (handle->state == TIM_STATE_UNINITIALIZED) {
-        return TIM_STATUS_NOT_INIT;
-    }
-
-    handle->period_elapsed_cb = callback;
-    return TIM_STATUS_OK;
-}
-
-/**
- * @brief Get timer device state
- */
-TIM_State_t TIM_GetState(TIM_Handle_t *handle)
-{
-    if (!TIM_IsHandleValid(handle)) {
-        return TIM_STATE_UNINITIALIZED;
-    }
-    return handle->state;
-}
-
-/**
- * @brief Get timer event counter
- */
-uint32_t TIM_GetEventCount(TIM_Handle_t *handle)
-{
-    if (!TIM_IsHandleValid(handle)) {
-        return 0;
-    }
-    return handle->event_counter;
-}
-
-/**
- * @brief De-initialize timer device
- */
-TIM_Status_t TIM_DeInit(TIM_Handle_t *handle)
-{
-    if (!TIM_IsHandleValid(handle)) {
-        return TIM_STATUS_INVALID_CFG;
-    }
-
-    /* Stop timer if running */
-    if (handle->state == TIM_STATE_RUNNING) {
-        TIM_Stop(handle);
-    }
-
-    /* Disable interrupts */
-    NVIC_DisableIRQ(handle->irq_number);
-
-    /* Disable timer peripheral clock */
-    TIM_DisableClock(handle);
-
-    /* Clear handle and callback */
-    TIM_UnregisterHandle(handle);
-    handle->period_elapsed_cb = NULL;
-    handle->state = TIM_STATE_UNINITIALIZED;
-
-    return TIM_STATUS_OK;
-}
-
-/* ============================================================================
- * INTERRUPT HANDLERS (Called by ARM Cortex-M4 vector table)
- * ============================================================================*/
-
-/**
- * @brief TIM2 interrupt handler
- * Manages update interrupt for TIM2 device
- */
+/* ---------------------------------------------------------------------------
+ * ISR implementations: minimal work - update counters and set event flag
+ * ---------------------------------------------------------------------------*/
 void TIM2_IRQHandler(void)
 {
-    if (g_tim2_handle == NULL) {
-        return;
-    }
-
-    /* Check if update interrupt flag is set */
-    if (g_tim2_handle->instance->SR & TIM_SR_UIF) {
-        /* Clear the interrupt flag (write 0 to clear) */
-        g_tim2_handle->instance->SR &= ~TIM_SR_UIF;
-
-        /* Increment event counter */
-        g_tim2_handle->event_counter++;
-
-        /* Call user callback if registered */
-        if (g_tim2_handle->period_elapsed_cb != NULL) {
-            g_tim2_handle->period_elapsed_cb();
-        }
+    TIM_Handle_t *h = TIM_FindInstance(TIM2);
+    if (h == NULL) return;
+    if (h->instance->SR & TIM_SR_UIF) {
+        h->instance->SR &= ~TIM_SR_UIF;
+        h->event_counter++;
+        h->event_flag = 1;
     }
 }
 
-/**
- * @brief TIM3 interrupt handler
- * Manages update interrupt for TIM3 device
- */
 void TIM3_IRQHandler(void)
 {
-    if (g_tim3_handle == NULL) {
-        return;
+    TIM_Handle_t *h = TIM_FindInstance(TIM3);
+    if (h == NULL) return;
+    if (h->instance->SR & TIM_SR_UIF) {
+        h->instance->SR &= ~TIM_SR_UIF;
+        h->event_counter++;
+        h->event_flag = 1;
     }
+}
 
-    /* Check if update interrupt flag is set */
-    if (g_tim3_handle->instance->SR & TIM_SR_UIF) {
-        /* Clear the interrupt flag (write 0 to clear) */
-        g_tim3_handle->instance->SR &= ~TIM_SR_UIF;
+void TIM4_IRQHandler(void)
+{
+    TIM_Handle_t *h = TIM_FindInstance(TIM4);
+    if (h == NULL) return;
+    if (h->instance->SR & TIM_SR_UIF) {
+        h->instance->SR &= ~TIM_SR_UIF;
+        h->event_counter++;
+        h->event_flag = 1;
+    }
+}
 
-        /* Increment event counter */
-        g_tim3_handle->event_counter++;
-
-        /* Call user callback if registered */
-        if (g_tim3_handle->period_elapsed_cb != NULL) {
-            g_tim3_handle->period_elapsed_cb();
-        }
+void TIM5_IRQHandler(void)
+{
+    TIM_Handle_t *h = TIM_FindInstance(TIM5);
+    if (h == NULL) return;
+    if (h->instance->SR & TIM_SR_UIF) {
+        h->instance->SR &= ~TIM_SR_UIF;
+        h->event_counter++;
+        h->event_flag = 1;
     }
 }
